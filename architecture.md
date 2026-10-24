@@ -8,7 +8,7 @@ Supported job types should be deliberately small, such as simulated report gener
 
 ## Implementation status
 
-The current code implements the Express API, Zod request validation, and a process-local `Map` behind `JobService`. The API can accept a job and return it later while that process remains alive. There is no Redis queue, worker, or PostgreSQL persistence yet. The `queued` response is an API-level placeholder at this stage; it does not mean BullMQ has accepted the job or that work will run.
+The current code implements the Express API, Zod request validation, a `JobService`, and a Prisma repository backed by PostgreSQL. A successful submission is durably stored with `PENDING` status and survives API restarts. There is no Redis queue or worker yet, so `PENDING` means only that the database has the record; it does not mean queue delivery or execution has happened.
 
 ## Components
 
@@ -22,14 +22,16 @@ The queue and database have different responsibilities. BullMQ state describes d
 
 ## Submission and execution flow
 
-The intended initial sequence is:
+The implemented database-only sequence is:
 
 1. Client submits a job to `POST /api/jobs`.
 2. API validates the type and payload, then persists a job record in PostgreSQL.
-3. API enqueues the job identifier in BullMQ and returns the identifier.
-4. A worker claims the queue item, loads the durable record, runs its handler, and records success or failure in PostgreSQL.
-5. BullMQ acknowledges, retries, or marks the queue item failed according to configuration.
-6. Clients read durable job status through the API.
+3. API returns the durable record with `PENDING` status.
+4. Clients read durable job status through the API.
+
+The later queue and worker milestones will add enqueue, execution, and completion updates around this foundation.
+
+The Prisma model stores job payload and result as PostgreSQL `JSONB`. Job lifecycle and job type are enums, which constrain stored values. A separate `JobExecution` row is designed for each attempt; the worker will write these in a later milestone. The paginated list reads its rows and total count in a PostgreSQL `RepeatableRead` transaction so both are based on the same snapshot.
 
 ```mermaid
 flowchart LR

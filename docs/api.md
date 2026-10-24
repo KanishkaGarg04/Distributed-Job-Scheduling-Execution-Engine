@@ -1,6 +1,6 @@
 # API (Milestone 2)
 
-These endpoints describe the current Express implementation. Responses use JSON. Jobs are currently stored in process memory; `queued` is not evidence of queue delivery or execution. Jobs are lost when the process restarts.
+These endpoints describe the current Express implementation. Responses use JSON. Jobs are stored in PostgreSQL and survive API restarts. `pending` means the row is durable; Redis delivery and execution do not exist yet.
 
 ## `POST /api/jobs`
 
@@ -28,13 +28,13 @@ Data processing request:
 
 `priority` is an integer from 1 to 10 and defaults to 5. `delaySeconds` is an integer from 0 to 86400 and defaults to 0. The API validates these fields now, but priority and delay have no scheduling effect until the queue milestone.
 
-The returned job includes `id`, `type`, `payload`, `priority`, `delaySeconds`, `status`, and `createdAt`. Current status is always `queued` because no worker exists yet.
+The returned job includes `id`, `type`, `payload`, `priority`, `delaySeconds`, `status`, `createdAt`, `updatedAt`, `result`, `errorMessage`, `startedAt`, `completedAt`, and `durationMs`. Current status is `pending` because there is no queue dispatcher or worker yet.
 
 Invalid JSON or schema input returns `400`. Schema errors have `{ "error": { "code": "VALIDATION_ERROR", "message": "Request body is invalid", "details": [...] } }`; malformed JSON uses code `INVALID_JSON`.
 
 ## `GET /api/jobs/:id`
 
-Returns `200` with `{ "job": ... }`, or `404` with `{ "error": { "code": "JOB_NOT_FOUND", "message": "Job not found" } }`.
+Returns `200` with `{ "job": ... }`, `400` if the supplied ID is not a UUID, or `404` with `{ "error": { "code": "JOB_NOT_FOUND", "message": "Job not found" } }`.
 
 ## `GET /api/jobs?limit=20&offset=0`
 
