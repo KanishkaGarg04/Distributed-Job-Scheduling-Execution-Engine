@@ -4,11 +4,16 @@
   "private": true,
   "type": "module",
   "description": "A learning project for a distributed job scheduling and execution system.",
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "tsx watch src/api/server.ts",
+    "dev:api": "tsx watch src/api/server.ts",
+    "dev:worker": "tsx watch src/workers/worker.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/api/server.js",
+    "start:worker": "node dist/src/workers/worker.js",
     "test": "vitest run tests",
     "typecheck": "prisma generate && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "db:generate": "prisma generate",
@@ -17,6 +22,7 @@
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
+    "bullmq": "^5.81.5",
     "dotenv": "^16.6.1",
     "express": "^5.3.0",
     "zod": "^4.6.5"

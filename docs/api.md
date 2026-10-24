@@ -1,10 +1,10 @@
-# API (Milestone 2)
+# API (Milestone 4)
 
-These endpoints describe the current Express implementation. Responses use JSON. Jobs are stored in PostgreSQL and survive API restarts. `pending` means the row is durable; Redis delivery and execution do not exist yet.
+These endpoints describe the current Express implementation. Responses use JSON. Jobs are stored in PostgreSQL and delivered through BullMQ/Redis. `pending` means the database row exists but enqueueing failed; `queued` means BullMQ accepted the message and execution has not started. Other statuses are `active`, `completed`, and `failed`.
 
 ## `POST /api/jobs`
 
-Returns `202 Accepted` with `{ "job": { ... } }` for a valid request.
+Returns `202 Accepted` with `{ "job": { ... } }` when the database write and queue enqueue succeed. The queue message contains only the job ID; the worker loads and validates the persisted payload before running it. Redis enqueue failure returns `503` with code `JOB_ENQUEUE_FAILED` and a `jobId`; the row remains `pending` for visibility, but automatic reconciliation is not implemented.
 
 Report request:
 
@@ -26,9 +26,9 @@ Data processing request:
 }
 ```
 
-`priority` is an integer from 1 to 10 and defaults to 5. `delaySeconds` is an integer from 0 to 86400 and defaults to 0. The API validates these fields now, but priority and delay have no scheduling effect until the queue milestone.
+`priority` is an integer from 1 to 10 and defaults to 5, with 10 highest. It is translated to BullMQ's numbering when enqueued. `delaySeconds` is an integer from 0 to 86400 and defaults to 0; the worker should not receive the job before its delay expires.
 
-The returned job includes `id`, `type`, `payload`, `priority`, `delaySeconds`, `status`, `createdAt`, `updatedAt`, `result`, `errorMessage`, `startedAt`, `completedAt`, and `durationMs`. Current status is `pending` because there is no queue dispatcher or worker yet.
+The returned job includes `id`, `type`, `payload`, `priority`, `delaySeconds`, `status`, `createdAt`, `updatedAt`, `result`, `errorMessage`, `startedAt`, `completedAt`, and `durationMs`. Attempt history is stored separately in PostgreSQL but is not exposed by an endpoint yet.
 
 Invalid JSON or schema input returns `400`. Schema errors have `{ "error": { "code": "VALIDATION_ERROR", "message": "Request body is invalid", "details": [...] } }`; malformed JSON uses code `INVALID_JSON`.
 
@@ -42,8 +42,8 @@ Returns `200` with `{ "items": [...], "total": n }`. `limit` is 1–100 (default
 
 ## `GET /health`
 
-Returns `200` with `{ "status": "ok" }`. This checks only that the API process can answer; there are no external dependencies to check in this milestone.
+Returns `200` with `{ "status": "ok" }`. It checks only that the API process can answer; it does not probe PostgreSQL or Redis.
 
 ## Deferred endpoints
 
-Cancellation, queue statistics, and execution results are deferred until the queue, persistence, and worker behavior exist. No Swagger/OpenAPI endpoint is generated yet.
+Cancellation, queue statistics, and execution-history retrieval are not implemented yet. No Swagger/OpenAPI endpoint is generated yet. A successful submit confirms queue acceptance, not job completion.

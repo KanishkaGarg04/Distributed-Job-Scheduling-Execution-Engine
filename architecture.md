@@ -1,4 +1,4 @@
-# Architecture (Milestone 1 proposal)
+# Architecture (Milestone 4 implementation)
 
 ## Goal and boundaries
 
@@ -8,30 +8,31 @@ Supported job types should be deliberately small, such as simulated report gener
 
 ## Implementation status
 
-The current code implements the Express API, Zod request validation, a `JobService`, and a Prisma repository backed by PostgreSQL. A successful submission is durably stored with `PENDING` status and survives API restarts. There is no Redis queue or worker yet, so `PENDING` means only that the database has the record; it does not mean queue delivery or execution has happened.
+The current code implements the Express API, Zod request validation, a `JobService`, and a Prisma repository backed by PostgreSQL. The API persists a job, enqueues its UUID in BullMQ/Redis, and marks it `QUEUED`. A separate worker reloads the job from PostgreSQL, validates its stored payload, runs a known handler, and records the current outcome plus one `JobExecution` attempt. `pending` remains visible if queue enqueue fails.
 
 ## Components
 
 - **Express API** accepts and validates requests, invokes application services, and returns HTTP responses.
 - **Job service and repository** keep route handlers thin and isolate job lifecycle rules from storage.
 - **PostgreSQL via Prisma** is the durable source for job metadata, results, errors, timestamps, and execution history.
-- **Redis via BullMQ** provides asynchronous delivery, delayed availability, retry scheduling, and queue-level state.
+- **Redis via BullMQ** provides asynchronous delivery, delayed availability, priority ordering, and queue-level state. Retry/backoff policy is not configured yet.
 - **Worker process** consumes queue messages, runs the handler for a known job type, and records lifecycle updates.
 
 The queue and database have different responsibilities. BullMQ state describes delivery and processing; PostgreSQL describes the application's durable job record. They can temporarily disagree, and the implementation must expose and document this rather than treating either as a magical shared transaction.
 
 ## Submission and execution flow
 
-The implemented database-only sequence is:
+The implemented submission and execution sequence is:
 
 1. Client submits a job to `POST /api/jobs`.
-2. API validates the type and payload, then persists a job record in PostgreSQL.
-3. API returns the durable record with `PENDING` status.
-4. Clients read durable job status through the API.
+2. API validates the type and payload, then persists a job record in PostgreSQL with `PENDING` status.
+3. API adds only `{ jobId }` to BullMQ. Priority and delay are translated to queue options.
+4. API marks the record `QUEUED` and returns `202`; if enqueue fails, it returns `503` with the persisted job ID.
+5. A worker receives the ID, loads the canonical job record from PostgreSQL, records `ACTIVE` and a `JobExecution` attempt, then executes the matching handler.
+6. Worker stores `COMPLETED` plus result or `FAILED` plus error and attempt duration in a PostgreSQL transaction.
+7. BullMQ acknowledges successful processing or considers a thrown handler error failed.
 
-The later queue and worker milestones will add enqueue, execution, and completion updates around this foundation.
-
-The Prisma model stores job payload and result as PostgreSQL `JSONB`. Job lifecycle and job type are enums, which constrain stored values. A separate `JobExecution` row is designed for each attempt; the worker will write these in a later milestone. The paginated list reads its rows and total count in a PostgreSQL `RepeatableRead` transaction so both are based on the same snapshot.
+The Prisma model stores job payload and result as PostgreSQL `JSONB`. Job lifecycle and job type are enums, which constrain stored values. Each attempt has a separate `JobExecution` row; the summary job row stores its latest outcome. The paginated list reads its rows and total count in a PostgreSQL `RepeatableRead` transaction so both are based on the same snapshot.
 
 ```mermaid
 flowchart LR
@@ -47,13 +48,13 @@ flowchart LR
 
 ## Consistency and failure boundary
 
-The initial design writes the PostgreSQL record before enqueueing. If enqueue fails, an accepted database row may remain without a queue item. The API must not silently report success in that case; the implementation milestone will choose an explicit response/state and recovery behavior. A transactional outbox can close this gap more robustly, but it adds machinery and is deferred until the simpler path is implemented and understood.
+The implementation writes the PostgreSQL record before enqueueing. If enqueue fails, the row remains `PENDING` and the API returns `503` with its ID. If enqueue succeeds but the API cannot mark the row `QUEUED`, the worker may still process it while the row temporarily looks pending. There is no automatic reconciliation yet. A transactional outbox can close this gap more robustly, but it adds machinery and is deferred until the simpler path is implemented and understood.
 
 A worker may perform a side effect and crash before the queue acknowledgement or database completion update. The job may run again. The system must therefore avoid claiming exactly-once execution. Handlers should be idempotent where practical, and status transitions and duplicate-delivery behavior must be made explicit.
 
 ## Planned API surface
 
-- `POST /api/jobs` submit a validated job, with optional priority, delay, and idempotency key as later milestones allow.
+- `POST /api/jobs` submit a validated job, with priority and delay implemented; idempotency keys are a later milestone.
 - `GET /api/jobs/:id` retrieve the durable status and available outcome.
 - `GET /api/jobs` list jobs with bounded pagination and filters.
 - `POST /api/jobs/:id/cancel` request cancellation where the job has not started or the handler supports cooperative cancellation.

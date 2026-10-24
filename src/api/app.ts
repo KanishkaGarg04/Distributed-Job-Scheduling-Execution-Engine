@@ -1,6 +1,6 @@
 import express, { type ErrorRequestHandler } from 'express';
 import { z } from 'zod';
-import { JobService } from '../jobs/job.service.js';
+import { JobService, QueueUnavailableError } from '../jobs/job.service.js';
 import { submitJobSchema } from '../jobs/job.schema.js';
 
 const listQuerySchema = z.object({
@@ -49,6 +49,16 @@ export function createApp(jobService: JobService) {
   const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
     if (error instanceof SyntaxError && 'body' in error) {
       return res.status(400).json({ error: { code: 'INVALID_JSON', message: 'Request body must be valid JSON' } });
+    }
+    if (error instanceof QueueUnavailableError) {
+      console.error('Could not enqueue persisted job', { jobId: error.jobId, cause: error.cause });
+      return res.status(503).json({
+        error: {
+          code: 'JOB_ENQUEUE_FAILED',
+          message: 'The job was saved as pending, but the queue is unavailable',
+          jobId: error.jobId,
+        },
+      });
     }
     console.error('Unhandled API request error', error);
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' } });

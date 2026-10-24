@@ -2,7 +2,7 @@
 
 ## DJS-001: One codebase, separate API and worker processes
 
-**Status:** Proposed in Milestone 1.
+**Status:** Implemented in Milestone 4.
 
 **Decision:** Keep API and worker as separate process entry points in one modular TypeScript codebase.
 
@@ -60,10 +60,40 @@
 
 ## DJS-007: Keep API status `pending` until a queue exists
 
-**Status:** Implemented in Milestone 3.
+**Status:** Historical decision from Milestone 3; superseded by DJS-008.
 
 **Decision:** A successful API submission persists a `PENDING` row. It does not claim queue delivery by labeling the record `QUEUED`.
 
 **Reason:** PostgreSQL writes are currently the only completed step. Queue status should mean BullMQ has accepted delivery once that behavior exists.
 
-**Trade-off:** The job remains pending indefinitely until the queue/worker milestones are implemented.
+**Trade-off:** The row remained pending until the queue milestone introduced a real delivery acknowledgement.
+
+## DJS-008: Use BullMQ 5 for Redis-backed delivery
+
+**Status:** Implemented in Milestone 4.
+
+**Decision:** Use BullMQ `^5.81.5`, with the exact resolved package pinned by `package-lock.json`. The API producer uses short Redis retry behavior so a submit request fails promptly; worker connections are configured to reconnect.
+
+**Reason:** BullMQ handles asynchronous delivery, delayed availability, priority ordering, and consumption while preserving simple API and worker entry points. Version 5 is an established major version for this learning implementation.
+
+**Trade-off:** Redis is required for successful submission. PostgreSQL and Redis do not share a transaction: PostgreSQL is written first, then BullMQ. An enqueue failure leaves a visible pending row and returns `503`; if enqueue succeeds but the final DB status write fails, the worker may still run.
+
+## DJS-009: Store only the job ID in the queue
+
+**Status:** Implemented in Milestone 4.
+
+**Decision:** Queue payload is `{ jobId }`. Worker reloads the canonical job type and payload from PostgreSQL and validates it again before dispatching to a known handler.
+
+**Reason:** Keep queue messages small and avoid two editable copies of the job payload.
+
+**Trade-off:** Workers need PostgreSQL to run jobs. A queue job ID does not promise exactly-once execution or idempotent external effects.
+
+## DJS-010: Persist one execution attempt per worker invocation
+
+**Status:** Implemented in Milestone 4; retry policy deferred.
+
+**Decision:** Store attempt start and finish in `JobExecution`; transactionally update that row and the latest `Job` state/result/error. Handler exceptions are recorded then rethrown to BullMQ.
+
+**Reason:** The job is the overall request, while execution history describes individual tries. The database transaction avoids a half-updated job summary/history pair.
+
+**Trade-off:** Retry/backoff is not configured yet. Abrupt process loss may leave the job marked active until later recovery work addresses it.

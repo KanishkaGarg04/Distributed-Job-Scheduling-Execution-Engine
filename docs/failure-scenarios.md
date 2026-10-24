@@ -1,15 +1,24 @@
-# Failure scenarios (design checklist)
+# Failure scenarios (implemented through Milestone 4)
 
-These scenarios distinguish current Milestone 3 behavior from behavior still to implement. They are not claims that future recovery behavior already exists.
+This document separates implemented behavior from recovery work still to do. Redis and PostgreSQL do not share a transaction, and this system does not claim exactly-once execution.
 
 | Failure | Expected concern | Design/verification work |
 |---|---|---|
-| API unavailable | Clients cannot submit or query jobs | Current: restart API; persisted PostgreSQL jobs remain available |
-| Redis unavailable during submission | Database write may succeed before enqueue fails | Not applicable yet: there is no Redis enqueue path. Later return a clear failure and define recovery |
-| PostgreSQL unavailable | API cannot durably accept jobs; workers cannot reliably update metadata | Current: API request fails with generic `500`, and the underlying error is logged. Health readiness is not wired to PostgreSQL yet |
-| Worker exits during processing | Queue delivery can be retried; handler may have run partially | Demonstrate redelivery, retries, and duplicate-side-effect limits |
-| Handler fails | Retry policy may run it again, then expose terminal failure | Not applicable yet: there is no worker or handler. `JobExecution` is ready to store attempt details later |
-| Cancellation after work starts | Arbitrary running work cannot be forcibly undone | Define cancellation as a best-effort request and support cooperative checks |
-| Redis and PostgreSQL disagree | Queue state and durable job status may differ temporarily | Expose both where useful and document reconciliation limits |
+| API unavailable | Clients cannot submit/query during downtime | PostgreSQL records and Redis queue remain independent of API process; restart API. Infrastructure durability depends on each service's configuration |
+| Redis unavailable during submission | PostgreSQL insert may already have succeeded | Producer fails promptly; API returns `503 JOB_ENQUEUE_FAILED` with the saved job ID. Record stays `pending`; no automatic re-enqueue exists yet. Operator can inspect it, but a repair endpoint/script is future work |
+| PostgreSQL unavailable | API cannot save or read metadata; workers cannot load/update a job | Request fails with `500`; current health endpoint does not detect dependency failure. Worker cannot complete processing without DB access |
+| Worker exits during active job | Execution may have started but DB completion may not have been written | BullMQ can recover a stalled delivery when its lock is lost, but this milestone has no retries/backoff policy. A crash can leave DB status `active`; if the handler had side effects, repeating it can duplicate them. M5 will demonstrate and harden this path |
+| Handler throws an error | The handler cannot produce a result | Processor records `failed` and its error/duration in PostgreSQL, then rethrows so BullMQ marks that queue attempt failed. No retry is configured yet |
+| Queue enqueue succeeds, API DB update fails | Redis has a job while the row may still say `pending` | Worker can run it and update the row. There is a temporary cross-system state gap because PostgreSQL and Redis cannot commit atomically |
+| Cancellation after work starts | Arbitrary running work cannot be forcibly undone | Cancellation is not implemented. Future behavior must be best-effort and cooperative |
+| Duplicate delivery | The same job can be invoked more than once after crash/recovery | BullMQ job ID avoids duplicate enqueue under that ID while retained, but does not guarantee exactly-once execution or prevent external side effects from repeating. Idempotency/retry policy is future work |
+
+## Current recovery procedure
+
+1. Check `/health` for API process responsiveness, then inspect the job with `GET /api/jobs/:id`.
+2. Check API/worker console logs and independently confirm Redis/PostgreSQL availability.
+3. A `pending` record after `503` has no automated queue repair in this milestone. Preserve the ID and row; do not blindly resubmit a side-effecting request. Reconciliation tooling is planned for later work.
+4. A `failed` record exposes the last handler error. Fix infrastructure or payload causes before manually resubmitting; automatic retries are not enabled yet.
+5. An `active` record after abrupt worker termination may be stale; compare queue state and logs. M5 will define recovery behavior more completely.
 
 The implementation should update this document as behaviors become real and should add a recovery procedure for each supported failure case.
